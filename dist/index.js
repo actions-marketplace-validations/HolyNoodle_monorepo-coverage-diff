@@ -15695,14 +15695,23 @@ async function computeCoverage(projects, folders) {
             const basePath = path_1.default.join(folders.base, project.path);
             const [branchCoverageFile] = glob_1.glob.globSync(`${branchPath}/**/coverage-summary.json`);
             const [baseCoverageFile] = glob_1.glob.globSync(`${basePath}/**/coverage-summary.json`);
-            if (!branchCoverageFile || !baseCoverageFile) {
-                core.setFailed(`Could not find coverage-summary.json for ${project.name}`);
+            if (!branchCoverageFile) {
+                core.setFailed(`Could not find BRANCH coverage-summary.json for ${project.name}`);
                 reject();
                 return;
             }
+            if (!baseCoverageFile) {
+                core.setFailed(`Could not find BASE coverage-summary.json for ${project.name}`);
+                reject();
+                return;
+            }
+            core.debug(`Found BRANCH coverage-summary.json for ${project.name} at ${branchCoverageFile}`);
+            core.debug(`Found BASE coverage-summary.json for ${project.name} at ${baseCoverageFile}`);
             const base = JSON.parse((0, fs_1.readFileSync)(baseCoverageFile).toString());
             const branch = JSON.parse((0, fs_1.readFileSync)(branchCoverageFile).toString());
-            const computeCoverage = (base, branch) => {
+            core.debug('BASE:\n' + JSON.stringify(base));
+            core.debug('BRANCH:\n' + JSON.stringify(branch));
+            const computeCoverage = (base = { total: 0, covered: 0, skipped: 0, pct: 0 }, branch) => {
                 return {
                     pct: branch.pct - base.pct,
                     covered: branch.covered - base.covered,
@@ -15712,33 +15721,33 @@ async function computeCoverage(projects, folders) {
                 };
             };
             const compareFiles = (base, branch) => {
-                // Added file
-                if (!base) {
-                    return {
-                        branches: branch.branches,
-                        functions: branch.functions,
-                        lines: branch.lines,
-                        statements: branch.statements
-                    };
-                }
                 return {
-                    branches: computeCoverage(base.branches, branch.branches),
-                    functions: computeCoverage(base.functions, branch.functions),
-                    lines: computeCoverage(base.lines, branch.lines),
-                    statements: computeCoverage(base.statements, branch.statements)
+                    branches: computeCoverage(base?.branches, branch.branches),
+                    functions: computeCoverage(base?.functions, branch.functions),
+                    lines: computeCoverage(base?.lines, branch.lines),
+                    statements: computeCoverage(base?.statements, branch.statements)
                 };
             };
-            const rootDir = process.cwd();
             const baseMap = Object.keys(base).reduce((acc, key) => {
+                if (key === 'total')
+                    return {
+                        ...acc,
+                        total: base.total
+                    };
                 return {
                     ...acc,
                     [key.replace(folders.base, '.')]: base[key]
                 };
             }, {});
             const branchMap = Object.keys(branch).reduce((acc, key) => {
+                if (key === 'total')
+                    return {
+                        ...acc,
+                        total: branch.total
+                    };
                 return {
                     ...acc,
-                    [key.replace(rootDir, '.')]: branch[key]
+                    [key.replace(folders.branch, '.')]: branch[key]
                 };
             }, {});
             resolve({
@@ -15791,6 +15800,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.run = void 0;
 const core = __importStar(__nccwpck_require__(2186));
+const path = __importStar(__nccwpck_require__(1017));
 const pull_branch_1 = __nccwpck_require__(7993);
 const prepare_1 = __nccwpck_require__(7294);
 const coverage_1 = __nccwpck_require__(9084);
@@ -15802,8 +15812,12 @@ const postMessage_1 = __nccwpck_require__(9717);
 async function run() {
     try {
         const baseBranch = core.getInput('base') || 'main';
+        const baseBranchDir = core.getInput('basePath') ?? '/tmp/base';
+        const targetBranchDir = core.getInput('branchPath') ?? process.cwd();
+        const group = core.getInput('group');
         const commands = core.getInput('commands').split('\n');
         const github_token = core.getInput('token');
+        const diffOnly = core.getInput('diffOnly');
         const projects = core
             .getInput('projects')
             .split('\n')
@@ -15812,13 +15826,20 @@ async function run() {
             path: projectStr.split(':')[1]
         }));
         const folders = {
-            branch: '.',
-            base: '/tmp/base'
+            branch: path.join(process.cwd(), targetBranchDir),
+            base: path.join(process.cwd(), baseBranchDir)
         };
-        await (0, pull_branch_1.pullBranch)(github_token, baseBranch, folders.base);
-        await (0, prepare_1.prepare)(commands, folders);
+        core.info(`Folders:\n${JSON.stringify(folders)}`);
+        if (diffOnly === 'false') {
+            await (0, pull_branch_1.pullBranch)(github_token, baseBranch, folders.base);
+            await (0, prepare_1.prepare)(commands, folders);
+        }
+        else {
+            core.info('Skipping base branch pull and prepare since diffOnly is true. You are expected to produce the coverage-summary.json files yourself before this action.');
+        }
         const summaries = await (0, coverage_1.computeCoverage)(projects, folders);
-        await (0, postMessage_1.postMessage)(github_token, summaries);
+        core.debug(`Computed coverage:\n${JSON.stringify(summaries)}`);
+        await (0, postMessage_1.postMessage)(github_token, summaries, group);
     }
     catch (error) {
         // Fail the workflow run if an error occurs
@@ -15864,16 +15885,22 @@ exports.postMessage = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const format_1 = __nccwpck_require__(6570);
 const github_1 = __nccwpck_require__(1225);
-const messageStart = 'Noodly Coverage!\n';
-async function postMessage(token, summaries) {
+const messageStartCreator = (group) => `:ramen: Noodly Coverage${group === '' ? '' : ` for ${group}`}! :ramen:\n`;
+async function postMessage(token, summaries, group) {
+    const messageStart = messageStartCreator(group);
     core.info('Formatting message');
-    const body = `${messageStart}
+    try {
+        const body = `${messageStart}
 
   ${(0, format_1.formatChangedCoverage)(summaries)}
   
   ${(0, format_1.formatCoverageDetails)(summaries)}`;
-    core.info('Posting message to branch');
-    await (0, github_1.sendMessage)(token, messageStart, body);
+        core.info('Posting message to branch');
+        await (0, github_1.sendMessage)(token, messageStart, body);
+    }
+    catch (error) {
+        core.error(error.message + '\n' + JSON.stringify(error.stack));
+    }
 }
 exports.postMessage = postMessage;
 
@@ -16007,15 +16034,18 @@ const formatCoverageNumber = (info) => {
             : 'color:green;font-weight:bold';
     const symbol = info.pct === 0 ? '' : info.pct < 0 ? '-' : '+';
     const num = Math.abs(info.pct).toFixed(2);
-    return `<span style="${style}">${symbol} ${num}<span> (${info.branch.pct.toFixed(2)}%)`;
+    return `<span style="${style}">${symbol} ${num}<span> (${info.branch?.pct.toFixed(2) ?? '??'}%)`;
 };
 exports.formatCoverageNumber = formatCoverageNumber;
 const formatCoverageDetails = (summaries) => {
     return `
 <details>
   <summary>Coverage diff details</summary>
+
   ${summaries.map(summary => {
-        return `## ${summary.name}
+        return `
+## ${summary.name}
+    
 ${(0, markdown_table_ts_1.getMarkdownTable)({
             alignColumns: true,
             alignment: [markdown_table_ts_1.Align.Left, markdown_table_ts_1.Align.Right, markdown_table_ts_1.Align.Right, markdown_table_ts_1.Align.Right, markdown_table_ts_1.Align.Right],
@@ -16024,10 +16054,10 @@ ${(0, markdown_table_ts_1.getMarkdownTable)({
                 body: Object.keys(summary.coverage)
                     .map(key => {
                     if (key === 'total')
-                        return [];
+                        return undefined;
                     const info = summary.coverage[key];
                     if (!info)
-                        return [];
+                        return undefined;
                     return [
                         key.replace(`/${summary.path}`, ''),
                         (0, exports.formatCoverageNumber)(info.lines),
@@ -16036,7 +16066,16 @@ ${(0, markdown_table_ts_1.getMarkdownTable)({
                         (0, exports.formatCoverageNumber)(info.branches)
                     ];
                 })
-                    .filter(s => s.length > 0)
+                    .filter(s => !!s)
+                    .concat([
+                    [
+                        'total',
+                        (0, exports.formatCoverageNumber)(summary.coverage.total.lines),
+                        (0, exports.formatCoverageNumber)(summary.coverage.total.statements),
+                        (0, exports.formatCoverageNumber)(summary.coverage.total.functions),
+                        (0, exports.formatCoverageNumber)(summary.coverage.total.branches)
+                    ]
+                ])
             }
         })}
 `;
@@ -16064,7 +16103,7 @@ const formatChangedCoverage = (summaries) => {
         return bPct - aPct;
     });
     if (changedSummaries.length === 0) {
-        return ":+1: All projects have a non changing coverage!";
+        return ':+1: All projects have a non changing coverage!';
     }
     return `These projects have a changing coverage:
 ${(0, markdown_table_ts_1.getMarkdownTable)({
@@ -16072,7 +16111,8 @@ ${(0, markdown_table_ts_1.getMarkdownTable)({
         alignment: [markdown_table_ts_1.Align.Left, markdown_table_ts_1.Align.Right, markdown_table_ts_1.Align.Right, markdown_table_ts_1.Align.Right, markdown_table_ts_1.Align.Right],
         table: {
             head: ['Project', 'Lines', 'Statements', 'Functions', 'Branches'],
-            body: changedSummaries.map(summary => {
+            body: changedSummaries
+                .map(summary => {
                 const { total } = summary.coverage;
                 return [
                     summary.name,
@@ -16082,6 +16122,7 @@ ${(0, markdown_table_ts_1.getMarkdownTable)({
                     (0, exports.formatCoverageNumber)(total.branches)
                 ];
             })
+                .filter(s => s[0].length > 1) // Not sure why
         }
     })}`;
 };

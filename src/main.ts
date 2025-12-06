@@ -1,4 +1,5 @@
 import * as core from '@actions/core'
+import * as path from 'path'
 import { pullBranch } from './pull_branch'
 import { prepare } from './prepare'
 import { Project, computeCoverage } from './coverage'
@@ -11,8 +12,12 @@ import { postMessage } from './postMessage'
 export async function run(): Promise<void> {
   try {
     const baseBranch = core.getInput('base') || 'main'
+    const baseBranchDir = core.getInput('basePath') ?? '/tmp/base'
+    const targetBranchDir = core.getInput('branchPath') ?? process.cwd()
+    const group = core.getInput('group')
     const commands = core.getInput('commands').split('\n')
     const github_token = core.getInput('token')
+    const diffOnly = core.getInput('diffOnly') as 'true' | 'false'
     const projects = core
       .getInput('projects')
       .split('\n')
@@ -25,17 +30,27 @@ export async function run(): Promise<void> {
       )
 
     const folders = {
-      branch: '.',
-      base: '/tmp/base'
+      branch: path.join(process.cwd(), targetBranchDir),
+      base: path.join(process.cwd(), baseBranchDir)
     }
 
-    await pullBranch(github_token, baseBranch, folders.base)
+    core.info(`Folders:\n${JSON.stringify(folders)}`)
 
-    await prepare(commands, folders)
+    if (diffOnly === 'false') {
+      await pullBranch(github_token, baseBranch, folders.base)
+
+      await prepare(commands, folders)
+    } else {
+      core.info(
+        'Skipping base branch pull and prepare since diffOnly is true. You are expected to produce the coverage-summary.json files yourself before this action.'
+      )
+    }
 
     const summaries = await computeCoverage(projects, folders)
 
-    await postMessage(github_token, summaries)
+    core.debug(`Computed coverage:\n${JSON.stringify(summaries)}`)
+
+    await postMessage(github_token, summaries, group)
   } catch (error) {
     // Fail the workflow run if an error occurs
     if (error instanceof Error) core.setFailed(error.message)

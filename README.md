@@ -10,9 +10,9 @@ The process of the code is as follow:
 - run coverage diff between current branch and base branch project by project
 - post a comment to the PR that sumarize which project has seen it's coverage changed with collapsible details
 
-## Configuration
+## Simple configuration
 
-Example of a github workflow configuration:
+Example of a easiest github workflow configuration:
 ```yml
 name: Pull request
 
@@ -29,14 +29,14 @@ jobs:
       - uses: actions/checkout@v3
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v3
-        with:
-          cache: "yarn" # using yarn in this example, but it's just a matter of choice
 
       # The important part is below
-      - uses: holynoodle/monorepo-coverage-diff@v1
+      - uses: holynoodle/monorepo-coverage-diff@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }} #required to pull the base branch and post the comment in the PR
-          base: main # default to main if not provided
+          base: main # optional, default main
+          basePath: /tmp/base # optional, default /tmp/base
+          group: MyCoverageGroup # optional, default ''. This is used to separate comments if you are triggering this action multiple times
           projects: | # List of projects and path to each project, coverage file for this project will be searched at the project root
             project1:path/to/project1
             project2:path/to/project2
@@ -51,10 +51,10 @@ jobs:
 
 Here is an example of the comment the action will write in the PR. The comment is updated with latest information:
 
-Noodly Coverage!
+:ramen: Noodly Coverage! :ramen:
 
 
-:warning: These projects have a decreasing coverage:
+These projects have a changing coverage:
 
 | Project |                                                          Lines |                                                     Statements |                                                      Functions |                                                       Branches |
 | :------ | -------------------------------------------------------------: | -------------------------------------------------------------: | -------------------------------------------------------------: | -------------------------------------------------------------: |
@@ -84,3 +84,36 @@ Noodly Coverage!
 | ./src/file2.ts              | <span style="color:red;font-weight:bold">- 100.00<span> (0.00%) | <span style="color:red;font-weight:bold">- 100.00<span> (0.00%) | <span style="color:red;font-weight:bold">- 83.34<span> (16.66%) | <span style="color:red;font-weight:bold">- 100.00<span> (0.00%) |
 
 </details>
+
+## Advanced configuration
+
+When you want to reduce the number of installs and builds, the action leave you the opportunity to only run diffs
+```yml
+steps:
+  - uses: actions/checkout@v3
+    with:
+      path: ./branch
+  - uses: actions/checkout@v3
+    with:
+      ref: main
+      path: ./base
+
+  - name: Use Node.js
+    uses: actions/setup-node@v3
+
+  - run: yarn --frozen-lockfile && yarn build && yarn ci:unit
+    working-directory: ./base
+  - run: yarn --frozen-lockfile && yarn build && yarn ci:unit
+    working-directory: ./branch
+
+  - uses: holynoodle/monorepo-coverage-diff@v6
+    with:
+      token: ${{ secrets.GITHUB_TOKEN }}
+      basePath: ./base
+      branchPath: ./branch
+      projects: |
+        project1:path/to/project1
+        project2:path/to/project2
+        project3:path/to/project3
+      diffOnly: true
+```
